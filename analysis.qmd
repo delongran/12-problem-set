@@ -20,6 +20,7 @@ library(sf)
 ## Make sure you have a census API key! You only need one.
 ## https://api.census.gov/data/key_signup.html
 library(tidycensus)
+census_api_key("6cba154bc2b13dd1269b03f924d613b6b7c6cf11", install = TRUE)
 options(tigris_use_cache = TRUE)
 
 ## Install the data package:
@@ -41,17 +42,18 @@ Read the documentation before working with the data.
 
 ```{r}
 nycomplaints
-```
 
 
 ## Two useful tables
 
 ```{r}
+#table of NYC zip codes
 nyc_zips
 ```
 
 
 ```{r}
+#table of names of some ACS variables 
 census_vars
 ```
 
@@ -59,6 +61,25 @@ census_vars
 ## 1. Create a zipcode-level base map
 
 The `nyzip_demog` table has demographic data for New York City by zip code, but it does not have map data (i.e. the polygon geometry). Use `get_acs()` from the `tidycensus` package to get the spatial data by ZCTA.
+
+
+```{r}
+nyc_zips <- nyc_zips$zip 
+
+vars <- c(total_pop = "B01003_001", 
+         moved_oos = "B07001_065")
+
+nyc19_gm <- get_acs(geography = "zcta", 
+                 state = "NY", 
+                 variables = vars, 
+                 year = 2019, 
+                 geometry = TRUE) %>%  
+  filter(GEOID %in% nyc_zips) %>%  
+  pivot_wider(names_from = variable, values_from = c(estimate, moe))
+
+```
+
+
 
 Hints:
 
@@ -82,6 +103,7 @@ The ACS has a lot of data. Consider the *very* long list of variables here:
 ```{r}
 ## Table of all 2019 ACS variables:
 acs_vars <- load_variables(year = 2019, dataset = "acs5")
+
 ```
 
 
@@ -91,7 +113,7 @@ _Hint:_ You can use `st_drop_geometry()` to change a spatial table into a simple
 
 ```{r}
 ## See how the `geometry` column disappears
-zip_data |>
+nyc_zips |>
   st_drop_geometry()
 ```
 
@@ -102,17 +124,137 @@ zip_data |>
 
 - Summarize the `nycomplaints` tibble in a way you think is informative to you.
 
+The nyccomplaints tibble includes requests for city services from residents. Most common by complaint type and descriptor: seeking an affordable housing/apartment, tax prep assistance, US citizenship, food stamps, street resurfacing, lease issue, landlord issue, misc legal services (wills, court docs, etc.). Has opendate, closedate, complaint type, descriptor, and geo info (zip, borough, city, etc.). 
+
 ## 2 Look at each column/variable in a little more detail
 
 - Explore the basic structure of the data, by e.g. writing code to summarize the variables or investigate aspects of them that seem interesting. You can also create some initial rough exploratory plots if you like, in addition to tables or other summaries. As you go, explain here what it is you are doing and why.
+
+```{r}
+#what types of complaints are most common overall? 
+nycomplaints %>% 
+  group_by(complaint_type, descriptor) %>%  
+  tally() %>%  
+  arrange(desc(n))
+
+nycomplaints %>% 
+  group_by(complaint_type) %>%  
+  tally() %>%  
+  arrange(desc(n))
+#there are 60 complaint types 
+
+#what's the top description for each complaint type? 
+nycomplaints %>% 
+  count(complaint_type, descriptor) %>%
+  group_by(complaint_type) %>%
+  arrange(desc(n)) %>%  
+  slice_head() %>% 
+  print(n= 60) 
+
+#what's the date range for the data?
+nycomplaints %>%  
+  arrange(opendate) %>%  
+  slice_head(n=5)
+
+nycomplaints %>%  
+  arrange(opendate) %>%  
+  slice_tail(n=5)
+
+# 1/1/2015 - 1/9/2025
+
+#characterizing park complaints 
+nycomplaints %>% 
+  filter(complaint_type == "Parks") %>%  
+  count(descriptor) %>%  
+  print(n=48)
+  
+nycomplaints %>% 
+  filter(complaint_type == "Parks") %>%  
+  count(borough) %>%  
+  print(n=48)
+```
+
 
 ## 3. Make some plots or maps
 
 - Following on from the tabular summarize, make some plots that you think show something interesting about the data. Make sure they look presentable and effective to you. Make a note about why you're doing each one. If you like, merge in data from elsewhere (e.g. from Census variables).
 
+```{r}
+#join geometry file with nycomplaints file 
+nyc19_gm <- nyc19_gm %>%  
+  mutate(zip = GEOID)
+
+nyc <- nycomplaints %>% 
+  mutate(zip = as.character(zip))
+
+nyc <- nycomplaints %>%  
+  left_join(nyc19_gm, by = "zip")
+
+#show frequency of park complaints by zip on a map 
+nyc_parks <- nyc %>%  
+  filter(complaint_type == "Parks")
+nyc_parks <- st_as_sf(nyc_parks)
+
+#just a map of nyc counties 
+ggplot(nyc_parks) + 
+  geom_sf(mapping = aes(fill = borough)) # colors each borough a different color 
+
+#number of parks complaints by zip 
+  
+nyc_parks2 <- nyc_parks %>%  
+  group_by(GEOID) %>%  
+  tally() %>%  
+  filter(!is.na(GEOID))
+  
+nyc_parks2 %>%  
+  ggplot(aes(fill = n)) + 
+  geom_sf() + 
+  labs(
+    title = "Parks Complaints in NYC", 
+    subtitle = "2015-2024"
+  )
+ 
+```
+
+It's clearly just the larger counties geographically that have the most parks complaints. 
+
+
 
 ## 4. Try to make one properly-polished plot or map
 
 - a. _Either_ choose one of the plots you've already made _or_ create a new plot or map using the data. Work it up to something more finished. Aim for something that is both properly informative and as polished as you can make it.
+```{r}
+
+nyc_parks2 <- nyc_parks %>%
+  filter(!is.na(GEOID)) %>%
+  group_by(GEOID) %>%
+  fill(borough, .direction = "downup") %>%  # fill in missing borough names from known zip 
+  summarize(
+    n = n(),
+    geometry = first(geometry),
+    estimate_total_pop = first(estimate_total_pop),
+    borough = first(borough),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    p = n / estimate_total_pop
+  )
+
+nyc_parks2 %>%  
+  ggplot(aes(fill = p)) + 
+  geom_sf() + 
+  scale_fill_viridis_c(
+    option = "rocket", 
+    labels = scales::percent_format(accuracy = 0.01)) + 
+  labs(
+    title = "Parks Complaints in NYC, 2015-2024", 
+    subtitle = "Percentage of total population reporting complaints by zip code", 
+    fill = "% of Population"
+  )
+# it's fine but I want borough labels 
+
+ggsave("nyc_parks_complaints_map.pdf")
+
+```
 
 - b. Try saving this plot or map using `ggsave()`. Create it as a PNG or PDF file. Make its dimensions (width and height) the right size for what you draw.
